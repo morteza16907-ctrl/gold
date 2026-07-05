@@ -182,7 +182,47 @@ function today(){return jStr();}
 const SK='gold_v6';
 function initDB(){return{tx:[],inv:[],cust:[],products:[]};}
 let DB=(()=>{try{return JSON.parse(localStorage.getItem(SK))||initDB();}catch{return initDB();}})();
-function save(){try{localStorage.setItem(SK,JSON.stringify(DB));}catch{}}
+function save(){
+  try{
+    localStorage.setItem(SK,JSON.stringify(DB));
+    autoBackup();
+  }catch{}
+}
+
+// پشتیبان خودکار — بعد از هر ثبت، یه نسخه امن جدا ذخیره میشه
+const AUTO_BACKUP_KEY = 'gold_v6_autobackup';
+const AUTO_BACKUP_HISTORY_KEY = 'gold_v6_backup_history';
+function autoBackup(){
+  try{
+    const snapshot = {
+      date: new Date().toISOString(),
+      jdate: today(),
+      db: DB
+    };
+    localStorage.setItem(AUTO_BACKUP_KEY, JSON.stringify(snapshot));
+    // نگهداری چند نسخه آخر (حداکثر 5 تا) برای بازیابی از نسخه‌های قدیمی‌تر
+    let history = [];
+    try{ history = JSON.parse(localStorage.getItem(AUTO_BACKUP_HISTORY_KEY)||'[]'); }catch{}
+    history.unshift(snapshot);
+    if(history.length > 5) history = history.slice(0,5);
+    localStorage.setItem(AUTO_BACKUP_HISTORY_KEY, JSON.stringify(history));
+  }catch(e){
+    // اگه localStorage پر بود، این خطا نباید کل ذخیره‌سازی اصلی رو خراب کنه
+    console.warn('Auto-backup failed:', e);
+  }
+}
+
+function restoreFromAutoBackup(){
+  try{
+    const snap = JSON.parse(localStorage.getItem(AUTO_BACKUP_KEY));
+    if(!snap || !snap.db){ alert('نسخه پشتیبان خودکار یافت نشد'); return; }
+    if(!confirm(`بازیابی از آخرین نسخه خودکار (${snap.jdate})؟\nتراکنش‌ها: ${snap.db.tx?.length||0}`)) return;
+    DB = {tx:snap.db.tx||[], inv:snap.db.inv||[], cust:snap.db.cust||[], products:snap.db.products||[]};
+    localStorage.setItem(SK, JSON.stringify(DB));
+    alert('بازیابی موفق ✅');
+    closeModal(); TAB='dashboard'; showTab();
+  }catch(e){ alert('خطا در بازیابی: '+e.message); }
+}
 let apiKey=localStorage.getItem('gkey')||'';
 
 // ══ state ════════════════════════════════════════════════════════════════
@@ -192,6 +232,14 @@ let RPT={from:'',to:'',type:'all'};
 let SQ={tx:'',cust:'',prod:'',activeCust:null};
 
 // ══ helpers ══════════════════════════════════════════════════════════════
+function findInv(item, karat, code) {
+  if (code) {
+    const byCode = DB.inv.find(i => i.itemCode === code);
+    if (byCode) return byCode;
+  }
+  return DB.inv.find(i => i.item === item && i.karat === karat && !i.itemCode);
+}
+
 const _=id=>document.getElementById(id);
 function fmt(n){if(!n||n==0)return'—';return Number(n).toLocaleString('fa-IR')+' ت';}
 function fmtG(n){if(!n||n==0)return'—';return Number(n).toFixed(3)+' گ';}
@@ -318,17 +366,18 @@ function submitTx(){
         debtRial:bal,debtGram:FORM.type==='deposit'?(+FORM.depositGram||0):0});
     }
   }
-  // موجودی
+  // موجودی — تطبیق بر اساس کد محصول (منحصربفرد) اگه وجود داشت
+  const invMatchIdx = FORM.itemCode
+    ? DB.inv.findIndex(i=>i.itemCode===FORM.itemCode)
+    : DB.inv.findIndex(i=>i.item===FORM.item&&i.karat===FORM.karat&&!i.itemCode);
   if(FORM.type==='buy'){
-    const idx=DB.inv.findIndex(i=>i.item===FORM.item&&i.karat===FORM.karat);
-    if(idx>=0){DB.inv[idx].w=(+DB.inv[idx].w+(+FORM.weight||0)).toFixed(3);}
-    else DB.inv.push({id:Date.now(),item:FORM.item,itemCode:FORM.itemCode,karat:FORM.karat,w:+FORM.weight||0});
+    if(invMatchIdx>=0){DB.inv[invMatchIdx].w=(+DB.inv[invMatchIdx].w+(+FORM.weight||0)).toFixed(3);}
+    else DB.inv.push({id:Date.now(),item:FORM.item,itemCode:FORM.itemCode,karat:FORM.karat,w:(+FORM.weight||0).toFixed(3)});
   }else if(FORM.type==='sell'){
-    const idx=DB.inv.findIndex(i=>i.item===FORM.item&&i.karat===FORM.karat);
-    if(idx>=0){
-      const nw=Math.max(0,+DB.inv[idx].w-(+FORM.weight||0));
-      if(nw<=0)DB.inv.splice(idx,1);
-      else DB.inv[idx].w=nw.toFixed(3);
+    if(invMatchIdx>=0){
+      const nw=Math.max(0,+DB.inv[invMatchIdx].w-(+FORM.weight||0));
+      if(nw<=0)DB.inv.splice(invMatchIdx,1);
+      else DB.inv[invMatchIdx].w=nw.toFixed(3);
     }
   }
   DB.tx.unshift(tx);save();
@@ -719,7 +768,7 @@ function prodsH(){
   </div>
   <div id="prod-list">
   ${!list.length?'<div class="empty">هنوز محصولی تعریف نشده</div>':list.map(p=>{
-    const inv=DB.inv.find(i=>i.item===p.name&&i.karat===p.karat);
+    const inv=findInv(p.name,p.karat,p.code);
     return`<div class="card" style="margin-bottom:8px">
       <div style="display:flex;justify-content:space-between;align-items:flex-start">
         <div>
@@ -747,7 +796,7 @@ function filterProds(){
   const list=q?DB.products.filter(p=>p.name.includes(q)||(p.code||'').toLowerCase().includes(q.toLowerCase())):DB.products;
   const el=_('prod-list');if(!el)return;
   el.innerHTML=list.length?list.map(p=>{
-    const inv=DB.inv.find(i=>i.item===p.name&&i.karat===p.karat);
+    const inv=findInv(p.name,p.karat,p.code);
     return`<div class="card" style="margin-bottom:8px">
       <div style="display:flex;justify-content:space-between;align-items:center">
         <div>
@@ -787,9 +836,21 @@ function renderModal(){
   }
   else if(MODAL==='backup'){
     html=`<div style="color:#2dd4bf;font-weight:800;font-size:16px;margin-bottom:14px">💾 پشتیبان‌گیری</div>
+
+    <div style="background:#1a1a2a;border:1px solid #60a5fa33;border-radius:10px;padding:14px;margin-bottom:12px">
+      <div style="color:#60a5fa;font-weight:700;font-size:13px;margin-bottom:6px">🔄 پشتیبان خودکار</div>
+      <div style="color:#777;font-size:12px;margin-bottom:10px">${(()=>{
+        try{
+          const snap=JSON.parse(localStorage.getItem('gold_v6_autobackup'));
+          return snap ? `آخرین نسخه خودکار: ${snap.jdate} (${snap.db.tx?.length||0} تراکنش) — بعد از هر ثبت خودکار آپدیت میشه، بدون نیاز به دانلود.` : 'هنوز نسخه‌ای ثبت نشده';
+        }catch{return 'هنوز نسخه‌ای ثبت نشده';}
+      })()}</div>
+      <button class="btn" onclick="restoreFromAutoBackup()" style="width:100%;background:#1a2a3a;color:#60a5fa;border:1px solid #60a5fa44;padding:10px">↩️ بازیابی از آخرین نسخه خودکار</button>
+    </div>
+
     <div style="background:#1a2a2a;border:1px solid #2dd4bf33;border-radius:10px;padding:14px;margin-bottom:12px">
       <div style="color:#2dd4bf;font-weight:700;font-size:13px;margin-bottom:6px">📤 دریافت فایل پشتیبان</div>
-      <div style="color:#777;font-size:12px;margin-bottom:10px">همه داده‌ها در یک فایل JSON ذخیره میشه</div>
+      <div style="color:#777;font-size:12px;margin-bottom:10px">همه داده‌ها در یک فایل JSON ذخیره میشه — پیشنهاد میشه هفته‌ای یکبار دانلود کنی</div>
       <button class="bgold" style="margin-top:0;background:#2dd4bf;color:#000" onclick="exportBackup()">↓ دانلود فایل پشتیبان</button>
     </div>
     <div style="background:#2a1a1a;border:1px solid #f8717133;border-radius:10px;padding:14px;margin-bottom:12px">
@@ -821,7 +882,7 @@ function renderModal(){
     </div>`:`
     <div style="background:#1a2a1a;border:1px solid #4ade8033;border-radius:8px;padding:10px;margin-bottom:10px">
       <div class="stitle" style="color:#4ade80">📦 ویرایش موجودی</div>
-      <div><label>وزن موجودی (گرم)</label><input id="np-ew" class="inp" type="number" inputmode="decimal" value="${(()=>{const inv=DB.inv.find(i=>i.item===(p?.name||'')&&i.karat===(p?.karat||'18'));return inv?inv.w:(p?.weight||0);})()}"></div>
+      <div><label>وزن موجودی (گرم)</label><input id="np-ew" class="inp" type="number" inputmode="decimal" value="${(()=>{const inv=findInv(p?.name||'',p?.karat||'18',p?.code);return inv?inv.w:(p?.weight||0);})()}"></div>
     </div>`}
     <div class="row"><button class="bgold" style="margin-top:0" onclick="saveProd(${p?.id||0})">ذخیره</button><button class="btn" onclick="closeModal()" style="flex:1;background:#2a2a2a;color:#eee">بستن</button></div>`;
   }
@@ -914,8 +975,10 @@ function saveProd(editId){
     if(idx>=0){
       const old=DB.products[idx];
       DB.products[idx]={...old,name,code,karat,weight,wp,pp,vp};
-      // آپدیت موجودی
-      const invIdx=DB.inv.findIndex(i=>i.item===old.name&&i.karat===old.karat);
+      // آپدیت موجودی — پیدا کردن بر اساس کد قدیمی (منحصربفرد) نه نام+عیار
+      const invIdx = old.code
+        ? DB.inv.findIndex(i=>i.itemCode===old.code)
+        : DB.inv.findIndex(i=>i.item===old.name&&i.karat===old.karat&&!i.itemCode);
       const ew=_('np-ew')?.value;
       if(invIdx>=0){
         DB.inv[invIdx].item=name;DB.inv[invIdx].itemCode=code;DB.inv[invIdx].karat=karat;
@@ -924,16 +987,26 @@ function saveProd(editId){
       }else if((ew&&+ew>0)||weight){
         DB.inv.push({id:Date.now(),item:name,itemCode:code,karat,w:ew?(+ew).toFixed(3):(+weight||0).toFixed(3)});
       }
-      // آپدیت تراکنش‌ها
-      if(old.name!==name||old.karat!==karat)
-        DB.tx.forEach(t=>{if(t.item===old.name&&t.karat===old.karat){t.item=name;t.itemCode=code;t.karat=karat;}});
+      // آپدیت تراکنش‌ها — بر اساس کد قدیمی اگه داشت
+      if(old.name!==name||old.karat!==karat||old.code!==code){
+        DB.tx.forEach(t=>{
+          const matches = old.code ? t.itemCode===old.code : (t.item===old.name&&t.karat===old.karat&&!t.itemCode);
+          if(matches){t.item=name;t.itemCode=code;t.karat=karat;}
+        });
+      }
     }
   }else{
+    // چک تکراری نبودن کد
+    if(code && DB.products.some(p=>p.code===code)){
+      alert('این کد قبلاً برای محصول دیگری استفاده شده. کد باید منحصربفرد باشد.');
+      return;
+    }
     DB.products.push({id:Date.now(),name,code,karat,weight,wp,pp,vp});
     const iwVal=_('np-iw')?.value?.trim();
     const iw=iwVal?+iwVal:(weight||0);
     if(iw>0){
-      const idx=DB.inv.findIndex(i=>i.item===name&&i.karat===karat);
+      // موجودی جدید همیشه یه ردیف جدید — چون کد منحصربفرده
+      const idx = code ? DB.inv.findIndex(i=>i.itemCode===code) : -1;
       if(idx>=0){DB.inv[idx].w=(+DB.inv[idx].w+iw).toFixed(3);}
       else DB.inv.push({id:Date.now(),item:name,itemCode:code,karat,w:iw.toFixed(3)});
     }
@@ -955,8 +1028,9 @@ function delProd(id){
   if(!confirm('حذف شود؟'))return;
   const p=DB.products.find(x=>x.id==id);
   if(p){
-    // حذف موجودی مرتبط
-    DB.inv=DB.inv.filter(i=>!(i.item===p.name&&i.karat===p.karat));
+    // حذف موجودی مرتبط — بر اساس کد اگه داشت
+    if(p.code) DB.inv=DB.inv.filter(i=>i.itemCode!==p.code);
+    else DB.inv=DB.inv.filter(i=>!(i.item===p.name&&i.karat===p.karat&&!i.itemCode));
   }
   DB.products=DB.products.filter(x=>x.id!=id);
   save();renderOther();
@@ -994,18 +1068,19 @@ function submitReturn(txId){
   }
 
   // آپدیت موجودی
+  const retInvIdx = t.itemCode
+    ? DB.inv.findIndex(i=>i.itemCode===t.itemCode)
+    : DB.inv.findIndex(i=>i.item===t.item&&i.karat===t.karat&&!i.itemCode);
   if(isSell && retW>0){
     // فروش مرجوع شد → موجودی برمیگرده (اضافه میشه)
-    const idx=DB.inv.findIndex(i=>i.item===t.item&&i.karat===t.karat);
-    if(idx>=0) DB.inv[idx].w=(+DB.inv[idx].w+retW).toFixed(3);
+    if(retInvIdx>=0) DB.inv[retInvIdx].w=(+DB.inv[retInvIdx].w+retW).toFixed(3);
     else DB.inv.push({id:Date.now(),item:t.item,itemCode:t.itemCode,karat:t.karat,w:retW.toFixed(3)});
   } else if(isBuy && retW>0){
     // خرید مرجوع شد → موجودی کم میشه
-    const idx=DB.inv.findIndex(i=>i.item===t.item&&i.karat===t.karat);
-    if(idx>=0){
-      const nw=Math.max(0,+DB.inv[idx].w-retW);
-      if(nw<=0) DB.inv.splice(idx,1);
-      else DB.inv[idx].w=nw.toFixed(3);
+    if(retInvIdx>=0){
+      const nw=Math.max(0,+DB.inv[retInvIdx].w-retW);
+      if(nw<=0) DB.inv.splice(retInvIdx,1);
+      else DB.inv[retInvIdx].w=nw.toFixed(3);
     }
   }
 
