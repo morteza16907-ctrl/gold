@@ -196,7 +196,7 @@ const _=id=>document.getElementById(id);
 function fmt(n){if(!n||n==0)return'—';return Number(n).toLocaleString('fa-IR')+' ت';}
 function fmtG(n){if(!n||n==0)return'—';return Number(n).toFixed(3)+' گ';}
 function badgeH(t){
-  const m={buy:['#1a3a2a','#4ade80','خرید طلا'],buycash:['#1a2a1a','#a3e635','خرید نقدی'],sell:['#3a1a1a','#f87171','فروش'],service:['#1a1a3a','#a78bfa','خدمات'],deposit:['#1a2a3a','#60a5fa','امانت'],payment:['#2a2a1a','#facc15','پرداخت']};
+  const m={buy:['#1a3a2a','#4ade80','خرید طلا'],buycash:['#1a2a1a','#a3e635','خرید نقدی'],sell:['#3a1a1a','#f87171','فروش'],service:['#1a1a3a','#a78bfa','خدمات'],deposit:['#1a2a3a','#60a5fa','امانت'],payment:['#2a2a1a','#facc15','پرداخت'],return:['#3a1a2a','#fb7185','مرجوعی']};
   const[bg,c,l]=m[t]||['#222','#888','—'];
   return`<span class="badge" style="background:${bg};color:${c}">${l}</span>`;
 }
@@ -434,12 +434,34 @@ function renderOther(){
 // ══ داشبورد ══════════════════════════════════════════════════════════════
 function dashH(){
   const j=toJalali(),tm=`${j.y}/${String(j.m).padStart(2,'0')}`,td=today();
+  // مجموع مبلغ مرجوعی شده برای هر تراکنش اصلی (چه کامل چه جزئی)
+  const returnedAmountByTx={};
+  DB.tx.filter(t=>t.type==='return'&&t.refTx).forEach(r=>{
+    returnedAmountByTx[r.refTx]=(returnedAmountByTx[r.refTx]||0)+(+r.total||0);
+  });
+  const returnedProfitByTx={};
+  DB.tx.filter(t=>t.type==='return'&&t.refTx).forEach(r=>{
+    const orig=DB.tx.find(o=>o.id===r.refTx);
+    if(orig&&orig.total>0){
+      // نسبت مرجوعی از کل، برای کسر متناسب سود
+      const ratio=(+r.total||0)/(+orig.total||1);
+      returnedProfitByTx[r.refTx]=(returnedProfitByTx[r.refTx]||0)+ratio*(+orig.profit||0);
+    }
+  });
+
   const s=(f,k)=>DB.tx.filter(f).reduce((a,t)=>a+(+t[k]||0),0);
-  const tdS=s(t=>t.type==='sell'&&t.date===td,'total');
-  const tdB=s(t=>(t.type==='buy'||t.type==='buycash')&&t.date===td,'total');
+  // فروش خالص = فروش - مبلغ مرجوعی شده از همون تراکنش
+  const netSell=(filterFn)=>DB.tx.filter(t=>t.type==='sell'&&filterFn(t)).reduce((a,t)=>a+((+t.total||0)-(returnedAmountByTx[t.id]||0)),0);
+  const netBuy=(filterFn)=>DB.tx.filter(t=>(t.type==='buy'||t.type==='buycash')&&filterFn(t)).reduce((a,t)=>a+((+t.total||0)-(returnedAmountByTx[t.id]||0)),0);
+  const netProfit=(filterFn)=>DB.tx.filter(t=>t.type==='sell'&&filterFn(t)).reduce((a,t)=>a+((+t.profit||0)-(returnedProfitByTx[t.id]||0)),0);
+
+  const tdS=netSell(t=>t.date===td);
+  const tdB=netBuy(t=>t.date===td);
   const tdSv=s(t=>t.type==='service'&&t.date===td,'sfee');
-  const mS=s(t=>t.type==='sell'&&(t.date||'').startsWith(tm),'total');
-  const mB=s(t=>(t.type==='buy'||t.type==='buycash')&&(t.date||'').startsWith(tm),'total');
+  const mS=netSell(t=>(t.date||'').startsWith(tm));
+  const mB=netBuy(t=>(t.date||'').startsWith(tm));
+  const mProfit=netProfit(t=>(t.date||'').startsWith(tm));
+  const mSv=s(t=>t.type==='service'&&(t.date||'').startsWith(tm),'sfee');
   const tg=DB.inv.reduce((a,i)=>a+(+i.w||0),0);
   const debtors=DB.cust.filter(c=>(c.debtRial||0)>0||(c.debtGram||0)>0).length;
   const recent=DB.tx.slice(0,6).map(t=>`
@@ -477,7 +499,7 @@ function dashH(){
   <div style="color:#c9a84c;font-size:12px;font-weight:700;margin-bottom:6px">امروز</div>
   <div class="row" style="flex-wrap:wrap;margin-bottom:10px">${statH('فروش',fmt(tdS),'#f87171')}${statH('خرید',fmt(tdB),'#60a5fa')}${statH('خدمات',fmt(tdSv),'#a78bfa')}</div>
   <div style="color:#c9a84c;font-size:12px;font-weight:700;margin-bottom:6px">این ماه — ${jMonth(j.m)}</div>
-  <div class="row" style="flex-wrap:wrap;margin-bottom:10px">${statH('فروش',fmt(mS),'#f87171')}${statH('خرید',fmt(mB),'#60a5fa')}${statH('سود',fmt(mS-mB),mS-mB>=0?'#4ade80':'#f87171')}</div>
+  <div class="row" style="flex-wrap:wrap;margin-bottom:10px">${statH('فروش',fmt(mS),'#f87171')}${statH('خرید',fmt(mB),'#60a5fa')}${statH('سود خالص',fmt(mProfit),mProfit>=0?'#4ade80':'#f87171')}</div>
   <div style="color:#c9a84c;font-size:12px;font-weight:700;margin-bottom:6px">کل</div>
   <div class="row" style="flex-wrap:wrap;margin-bottom:10px">${statH('مانده طلا',fmtG(tg),'#c9a84c')}${statH('بدهکار',debtors+' نفر','#f87171')}</div>
   <div class="card"><div class="stitle">📦 موجودی</div>${invList}
@@ -490,7 +512,7 @@ function dashH(){
 
 // ══ تراکنش‌ها ════════════════════════════════════════════════════════════
 function txH(){
-  const types=[['all','همه'],['sell','فروش'],['buy','خرید طلا'],['buycash','خرید نقدی'],['service','خدمات'],['deposit','امانت'],['payment','پرداخت']];
+  const types=[['all','همه'],['sell','فروش'],['buy','خرید طلا'],['buycash','خرید نقدی'],['service','خدمات'],['deposit','امانت'],['payment','پرداخت'],['return','مرجوعی']];
   let list=DB.tx;
   if(RPT.type&&RPT.type!=='all')list=list.filter(t=>t.type===RPT.type);
   if(RPT.from)list=list.filter(t=>t.date&&jCmp(t.date,RPT.from)>=0);
@@ -514,8 +536,12 @@ function txH(){
           ${t.date?`<span class="tag">📅 ${t.date}</span>`:''}${t.cust?`<span class="tag">👤 ${t.cust}</span>`:''}
           ${t.w?`<span class="tag">⚖️ ${t.w}گ</span>`:''}${t.depositGram?`<span class="tag">📥 ${t.depositGram}گ</span>`:''}
           ${t.paidGram?`<span class="tag">📤 ${t.paidGram}گ</span>`:''}${t.note?`<span class="tag">📝 ${t.note}</span>`:''}
+          ${t.returned?`<span class="tag" style="color:#f87171">↩️ مرجوع شده</span>`:''}
         </div>
-        <button onclick="printTx(${t.id})" style="background:#1a1a2a;color:#60a5fa;border:none;border-radius:6px;padding:4px 8px;font-size:10px;cursor:pointer;font-family:inherit;white-space:nowrap">🖨️ چاپ</button>
+        <div style="display:flex;gap:4px">
+          ${(t.type==='sell'||t.type==='buy'||t.type==='buycash')&&!t.returned?`<button onclick="openReturnModal(${t.id})" style="background:#2a1a1a;color:#f87171;border:none;border-radius:6px;padding:4px 8px;font-size:10px;cursor:pointer;font-family:inherit;white-space:nowrap">↩️ مرجوعی</button>`:''}
+          <button onclick="printTx(${t.id})" style="background:#1a1a2a;color:#60a5fa;border:none;border-radius:6px;padding:4px 8px;font-size:10px;cursor:pointer;font-family:inherit;white-space:nowrap">🖨️ چاپ</button>
+        </div>
       </div>
     </div>`).join('');
   return`
@@ -741,6 +767,12 @@ function filterProds(){
 // ══ مودال‌ها ══════════════════════════════════════════════════════════════
 function openModal(type,data){MODAL=type;MD=data||{};renderModal();}
 function closeModal(){MODAL=null;MD={};_('modal-cont').innerHTML='';}
+function openReturnModal(txId){
+  const t=DB.tx.find(x=>x.id==txId);
+  if(!t)return;
+  MODAL='returnTx';MD={tx:t};renderModal();
+}
+
 function openPayModal(name){const c=DB.cust.find(x=>x.name===name);if(c){MODAL='payment';MD={cust:c};renderModal();}}
 
 function renderModal(){
@@ -763,7 +795,7 @@ function renderModal(){
     <div style="background:#2a1a1a;border:1px solid #f8717133;border-radius:10px;padding:14px;margin-bottom:12px">
       <div style="color:#f87171;font-weight:700;font-size:13px;margin-bottom:6px">📥 بازیابی از فایل</div>
       <div style="color:#777;font-size:12px;margin-bottom:10px">⚠️ داده‌های فعلی جایگزین میشن</div>
-      <input type="file" id="restore-file" accept=".json" style="display:none" onchange="importBackup(this.files[0])">
+      <input type="file" id="restore-file" accept=".json,application/json,text/plain,text/json,*/*" style="display:none" onchange="importBackup(this.files[0])">
       <button class="btn" onclick="_('restore-file').click()" style="width:100%;background:#3a1a1a;color:#f87171;border:1px solid #f8717144;padding:12px">📂 انتخاب فایل پشتیبان</button>
     </div>
     <button class="btn" onclick="closeModal()" style="width:100%;background:#2a2a2a;color:#eee">بستن</button>`;
@@ -792,6 +824,36 @@ function renderModal(){
       <div><label>وزن موجودی (گرم)</label><input id="np-ew" class="inp" type="number" inputmode="decimal" value="${(()=>{const inv=DB.inv.find(i=>i.item===(p?.name||'')&&i.karat===(p?.karat||'18'));return inv?inv.w:(p?.weight||0);})()}"></div>
     </div>`}
     <div class="row"><button class="bgold" style="margin-top:0" onclick="saveProd(${p?.id||0})">ذخیره</button><button class="btn" onclick="closeModal()" style="flex:1;background:#2a2a2a;color:#eee">بستن</button></div>`;
+  }
+  else if(MODAL==='returnTx'){
+    const t=MD.tx;
+    const typeLabel={buy:'خرید طلا',buycash:'خرید نقدی',sell:'فروش'}[t.type]||t.type;
+    const isSell=t.type==='sell';
+    html=`<div style="color:#f87171;font-weight:800;font-size:16px;margin-bottom:4px">↩️ ثبت مرجوعی</div>
+    <div style="color:#888;font-size:13px;margin-bottom:14px">${typeLabel}: ${t.item} ${t.itemCode?'#'+t.itemCode:''}</div>
+    <div style="background:#1a1a1a;border-radius:8px;padding:10px;margin-bottom:12px;font-size:12px">
+      <div style="display:flex;justify-content:space-between;padding:3px 0"><span style="color:#666">وزن اصلی:</span><span>${t.w||'—'} گرم</span></div>
+      <div style="display:flex;justify-content:space-between;padding:3px 0"><span style="color:#666">مبلغ اصلی:</span><span>${fmt(t.total)}</span></div>
+      ${t.cust?`<div style="display:flex;justify-content:space-between;padding:3px 0"><span style="color:#666">مشتری:</span><span>${t.cust}</span></div>`:''}
+    </div>
+    <div class="g2" style="margin-bottom:10px">
+      <div class="s2">
+        <label>نوع مرجوعی</label>
+        <select id="ret-type" class="inp" onchange="onRetTypeChange(this.value)">
+          <option value="full">مرجوعی کامل (همه چیز برمیگرده)</option>
+          <option value="partial">مرجوعی جزئی (مقدار دلخواه)</option>
+        </select>
+      </div>
+      <div id="ret-partial-fields" style="display:none;contents">
+        <div><label>وزن مرجوعی (گرم)</label><input id="ret-w" class="inp" type="number" inputmode="decimal" placeholder="مثلاً 2.5"></div>
+        <div><label>مبلغ مرجوعی (تومان)</label><input id="ret-amount" class="inp" type="number" inputmode="numeric" placeholder="مبلغ بازگشتی"></div>
+      </div>
+      <div class="s2"><label>یادداشت</label><input id="ret-note" class="inp" placeholder="دلیل مرجوعی (اختیاری)"></div>
+    </div>
+    <div style="background:#1a2a1a;border-radius:8px;padding:10px;margin-bottom:12px;font-size:12px;color:#4ade80">
+      💡 ${isSell?'مرجوعی فروش یعنی طلا به موجودی برمیگرده و پول به مشتری برمیگردونی':'مرجوعی خرید یعنی طلا از موجودی کم میشه و پولی که دادی برمیگرده'}
+    </div>
+    <div class="row"><button class="bgold" style="margin-top:0;background:#f87171" onclick="submitReturn(${t.id})">ثبت مرجوعی</button><button class="btn" onclick="closeModal()" style="flex:1;background:#2a2a2a;color:#eee">بستن</button></div>`;
   }
   else if(MODAL==='payment'){
     const c=MD.cust;
@@ -825,8 +887,9 @@ function renderModal(){
       <div><label>تا تاریخ</label><input id="rpt-t" class="inp" value="${RPT.to}" placeholder="1405/12/29" oninput="RPT.to=this.value;renderModal()"></div>
     </div>
     <div class="stitle">💰 مالی</div>
-    <div class="row" style="flex-wrap:wrap;margin-bottom:10px">${statH('فروش',fmt(tS),'#f87171')}${statH('خرید',fmt(tB),'#60a5fa')}${statH('سود خالص',fmt(tS-tB+tSv),tS-tB+tSv>=0?'#4ade80':'#f87171')}</div>
+    <div class="row" style="flex-wrap:wrap;margin-bottom:10px">${statH('فروش خالص',fmt(tS),'#f87171')}${statH('خرید خالص',fmt(tB),'#60a5fa')}${statH('سود خالص',fmt(tProfit),tProfit>=0?'#4ade80':'#f87171')}</div>
     <div class="row" style="flex-wrap:wrap;margin-bottom:12px">${statH('درآمد خدمات',fmt(tSv),'#a78bfa')}${statH('وصول شده',fmt(tPaid),'#4ade80')}${statH('مانده طلبکاری',fmt(tBal),'#f87171')}</div>
+    <div class="row" style="flex-wrap:wrap;margin-bottom:12px">${tRet>0?statH('کل مرجوعی‌ها',fmt(tRet),'#fb7185'):''}</div>
     <div class="stitle">⚖️ گرمی</div>
     <div class="row" style="flex-wrap:wrap;margin-bottom:12px">${statH('گرم فروش',fmtG(tGS),'#f87171')}${statH('گرم خرید',fmtG(tGB),'#60a5fa')}${statH('خالص',fmtG(tGB-tGS),'#c9a84c')}</div>
     <div class="stitle">🔴 تراز کلی فروشگاه (طلب از مشتریان)</div>
@@ -906,6 +969,82 @@ function submitPay(){
   if(idx>=0){DB.cust[idx].debtRial=Math.max(0,(DB.cust[idx].debtRial||0)-rial);DB.cust[idx].debtGram=Math.max(0,(DB.cust[idx].debtGram||0)-gram);}
   DB.tx.unshift({id:Date.now(),date:today(),type:'payment',item:'پرداخت حساب',cust:c.name,paid:rial,paidGram:gram,note,total:0,balance:0,gv:0,wage:0,profit:0,vat:0});
   save();closeModal();TAB='customers';showTab();
+}
+
+function onRetTypeChange(v){
+  document.getElementById('ret-partial-fields').style.display = v==='partial' ? 'contents' : 'none';
+}
+
+function submitReturn(txId){
+  const t=DB.tx.find(x=>x.id==txId);
+  if(!t)return;
+  const retType=document.getElementById('ret-type').value;
+  const note=document.getElementById('ret-note').value||'';
+  const isSell=t.type==='sell';
+  const isBuy=t.type==='buy'||t.type==='buycash';
+
+  let retW, retAmount;
+  if(retType==='full'){
+    retW = +t.w||0;
+    retAmount = +t.total||0;
+  } else {
+    retW = +document.getElementById('ret-w').value||0;
+    retAmount = +document.getElementById('ret-amount').value||0;
+    if(!retW && !retAmount){alert('وزن یا مبلغ مرجوعی را وارد کنید');return;}
+  }
+
+  // آپدیت موجودی
+  if(isSell && retW>0){
+    // فروش مرجوع شد → موجودی برمیگرده (اضافه میشه)
+    const idx=DB.inv.findIndex(i=>i.item===t.item&&i.karat===t.karat);
+    if(idx>=0) DB.inv[idx].w=(+DB.inv[idx].w+retW).toFixed(3);
+    else DB.inv.push({id:Date.now(),item:t.item,itemCode:t.itemCode,karat:t.karat,w:retW.toFixed(3)});
+  } else if(isBuy && retW>0){
+    // خرید مرجوع شد → موجودی کم میشه
+    const idx=DB.inv.findIndex(i=>i.item===t.item&&i.karat===t.karat);
+    if(idx>=0){
+      const nw=Math.max(0,+DB.inv[idx].w-retW);
+      if(nw<=0) DB.inv.splice(idx,1);
+      else DB.inv[idx].w=nw.toFixed(3);
+    }
+  }
+
+  // آپدیت مانده مشتری
+  if(t.cust){
+    const cidx=DB.cust.findIndex(c=>c.name===t.cust);
+    if(cidx>=0){
+      if(isSell){
+        // فروش مرجوع شد → بدهی مشتری کم میشه (چون دیگه بدهکار این مبلغ نیست)
+        DB.cust[cidx].debtRial=(DB.cust[cidx].debtRial||0)-retAmount;
+      } else if(isBuy){
+        // خرید مرجوع شد → طلبی که به مشتری بدهکار بودیم کم میشه
+        DB.cust[cidx].debtRial=(DB.cust[cidx].debtRial||0)+retAmount;
+      }
+    }
+  }
+
+  // ثبت تراکنش مرجوعی
+  DB.tx.unshift({
+    id:Date.now(), date:today(), type:'return',
+    item:t.item+' (مرجوعی)', itemCode:t.itemCode,
+    w:retW||'', karat:t.karat, cust:t.cust, phone:t.phone,
+    note:`مرجوع از تراکنش ${typeLabelFa(t.type)} — ${note}`,
+    total:retAmount, paid:retAmount, balance:0,
+    gv:0,wage:0,profit:0,vat:0, refTx:t.id
+  });
+
+  // علامت‌گذاری تراکنش اصلی
+  if(retType==='full'){
+    t.returned=true;
+  } else {
+    t.returned='partial';
+  }
+
+  save();closeModal();renderOther();
+}
+
+function typeLabelFa(t){
+  return{buy:'خرید طلا',buycash:'خرید نقدی',sell:'فروش',service:'خدمات',deposit:'امانت'}[t]||t;
 }
 
 function saveKey(){apiKey=_('ak').value;localStorage.setItem('gkey',apiKey);closeModal();}
@@ -1001,7 +1140,7 @@ function printCustStatement(custId){
 
 function exportCSV(){
   const h='تاریخ,نوع,کالا,کد,گرم,عیار,قیمت هر گرم,ارزش طلا,اجرت,سود,مالیات,قیمت نهایی,پرداخت,مانده,مشتری,تلفن,یادداشت\n';
-  const rows=DB.tx.map(t=>[t.date,{buy:'خرید طلا',buycash:'خرید نقدی',sell:'فروش',service:'خدمات',deposit:'امانت',payment:'پرداخت'}[t.type]||'',t.item||'',t.itemCode||'',t.w||'',t.karat||'',t.ppg||'',t.gv||'',t.wage||'',t.profit||'',t.vat||'',t.total||'',t.paid||'',t.balance||'',t.cust||'',t.phone||'',t.note||''].join(',')).join('\n');
+  const rows=DB.tx.map(t=>[t.date,{buy:'خرید طلا',buycash:'خرید نقدی',sell:'فروش',service:'خدمات',deposit:'امانت',payment:'پرداخت',return:'مرجوعی'}[t.type]||'',t.item||'',t.itemCode||'',t.w||'',t.karat||'',t.ppg||'',t.gv||'',t.wage||'',t.profit||'',t.vat||'',t.total||'',t.paid||'',t.balance||'',t.cust||'',t.phone||'',t.note||''].join(',')).join('\n');
   const a=document.createElement('a');a.href=URL.createObjectURL(new Blob(['\uFEFF'+h+rows],{type:'text/csv;charset=utf-8;'}));a.download='حسابداری_طلا.csv';a.click();
 }
 
@@ -1032,13 +1171,6 @@ document.addEventListener('click',e=>{
 
 setType('sell');
 showTab();
-</script>
-<script>
-if ('serviceWorker' in navigator) {
-  window.addEventListener('load', () => {
-    navigator.serviceWorker.register('./sw.js').catch(()=>{});
-  });
-}
 </script>
 </body>
 </html>
